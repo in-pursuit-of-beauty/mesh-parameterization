@@ -1,5 +1,9 @@
 #include "geometry_images.h"
 #include <deque>
+#include <igl/is_edge_manifold.h>
+#include <igl/extract_manifold_patches.h>
+#include <igl/remove_unreferenced.h>
+#include <igl/remove_duplicate_vertices.h>
 #include <igl/edge_topology.h>
 #include <igl/is_boundary_edge.h>
 #include <igl/vertex_triangle_adjacency.h>
@@ -14,16 +18,78 @@
 #include <unordered_set>
 
 int check_components(const Eigen::MatrixXd & V,
-                     const Eigen::MatrixXi & F)
+                     const Eigen::MatrixXi & F,
+                     int & max_component_id)
 {
     Eigen::VectorXi components;  // per-face component IDs
     igl::facet_components(F, components);
 
     std::unordered_set<int> unique_component_ids;
     for (int ci = 0; ci < components.size(); ci++)
+    {
         unique_component_ids.insert(components[ci]);
+        max_component_id = std::max(components[ci], max_component_id);
+    }
 
     return unique_component_ids.size();
+}
+
+void clean_mesh(Eigen::MatrixXd & V,
+                Eigen::MatrixXi & F)
+{
+    // Remove unreferenced
+    Eigen::MatrixXd NV;
+    Eigen::MatrixXi NF;
+    Eigen::VectorXi I;
+    igl::remove_unreferenced(V, F, NV, NF, I);
+
+    // Remove duplicate vertices
+    Eigen::MatrixXd SV;
+    Eigen::MatrixXi SVI;
+    Eigen::MatrixXi SVJ;
+    igl::remove_duplicate_vertices(NV, NF, 0.001, V, SVI, SVJ, F);
+}
+
+// Remove all but the largest connected component.
+void remove_non_max_components(Eigen::MatrixXd & V,
+                               Eigen::MatrixXi & F,
+                               const int & max_component_id)
+{
+    Eigen::VectorXi components;  // per-face component IDs
+    igl::facet_components(F, components);
+
+    // Determine component sizes
+    std::vector<int> component_sizes(max_component_id + 1, 0);
+    for (int fi = 0; fi < components.size(); fi++)
+        component_sizes[components[fi]]++;
+
+    // Identify largest component
+    int largest_component = 0;
+    int largest_component_size = -1;
+    for (int ci = 0; ci < component_sizes.size(); ci++)
+    {
+        if (component_sizes[ci] > largest_component_size)
+        {
+            largest_component = ci;
+            largest_component_size = component_sizes[ci];
+        }
+    }
+
+    // Delete non-max components
+    for (int fi = F.rows() - 1; fi >= 0; fi--)
+    {
+        if (components[fi] != largest_component)
+        {
+            // Delete the offending face
+            unsigned int num_faces = F.rows() - 1;
+            F.block(fi, 0, num_faces - fi, 3) = \
+                F.block(fi + 1, 0, num_faces - fi, 3);
+            F.conservativeResize(num_faces, 3);
+        }
+    }
+
+    // Clean
+    clean_mesh(V, F);
 }
 
 // Given a 3D mesh of arbitrary genus,
@@ -281,49 +347,79 @@ void boundary_parameterization(const Eigen::MatrixXd & V,
     }
 }
 
-void geometry_image(const Eigen::MatrixXd & V,
-                    const Eigen::MatrixXi & F,
-                    Eigen::MatrixXd & U,
-                    Eigen::MatrixXd & Vcut,
-                    Eigen::MatrixXi & Fcut)
+void geometry_image(Eigen::MatrixXd & V,
+                    Eigen::MatrixXi & F,
+                    Eigen::MatrixXd & U)
 {
-    int num_components = check_components(V, F);
+    int max_component_id = -1;
+    int num_components = check_components(V, F, max_component_id);
     printf("This mesh has %d connected component(s)\n", num_components);
     if (num_components != 1)
         printf("[-] Warning: number of connected components should be 1\n");
+        printf("Reducing to largest connected component...\n");
+        remove_non_max_components(V, F, max_component_id);
+        num_components = check_components(V, F, max_component_id);
+        printf("Done. Now the mesh has %d connected component(s)\n", num_components);
 
-    // Split into connected components
-    // Process each, allocate rectangular space in the output UV
-    // parameterization proportional to number of vertices in the component
+    // Extract manifold patches
+    Eigen::VectorXi P;
+    int num_patches = igl::extract_manifold_patches(F, P);
+    printf("Extracted %d manifold patches.\n", num_patches);
 
-    // Convert to topological disk, define boundary
-    bool single_boundary_loop = false;
-    Eigen::VectorXi boundary;
-    if (single_boundary_loop)
+    U.resize(V.rows(), 2);  // we will fill this in
+    for (int pi = 0; pi < num_patches; pi++)
     {
-        igl::boundary_loop(F, boundary);
-        Vcut = V;
-        Fcut = F;
-    }
-    else
-    {
-        Eigen::ArrayXi cut_edges;
-        initial_cut(V, F, 0.59f, cut_edges);
-        printf("Number of edges in initial cut: %d\n", cut_edges.sum());
-        open_cut(V, F, cut_edges, Vcut, Fcut, boundary);
-        printf("Finished opening cut.\n");
-    }
+        printf("================================================\n");
+        printf("==> Processing patch %d/%d.\n", pi + 1, num_patches);
+        printf("================================================\n");
 
-    // Parameterize boundary
-    bool circle_boundary = false;
-    Eigen::MatrixXd boundary_uv;
-    if (circle_boundary)
-        igl::map_vertices_to_circle(Vcut, boundary, boundary_uv);
-    else
-        boundary_parameterization(Vcut, Fcut, boundary, boundary_uv);
-    printf("Finished parameterizing boundary.\n");
+        // Collect faces for patch
+        std::vector<int> patch_face_idxs;
+        for (int fi = 0; fi < P.rows(); fi++)
+            if (P[fi] == pi)
+                patch_face_idxs.push_back(fi);
+        Eigen::MatrixXd V_patch = V.replicate(1, 1);
+        Eigen::MatrixXi F_patch(patch_face_idxs.size(), 3);
+        for (int pfi = 0; pfi < patch_face_idxs.size(); pfi++)
+            F_patch.row(pfi) = F.row(patch_face_idxs[pfi]);  // alt: Eigen 3.4 slicing
+        clean_mesh(V_patch, F_patch);
 
-    // Parameterize interior
-    igl::harmonic(Vcut, Fcut, boundary, boundary_uv, 1, U);
-    printf("Finished parameterizing interior.\n");
+        printf("[debug] is edge manifold: %d\n", igl::is_edge_manifold(F_patch));
+
+        // Convert to topological disk, define boundary
+        bool single_boundary_loop = false;
+        Eigen::VectorXi boundary;
+        if (single_boundary_loop)
+        {
+            igl::boundary_loop(F, boundary);
+        }
+        else
+        {
+            Eigen::ArrayXi cut_edges;
+            initial_cut(V_patch, F_patch, 0.59f, cut_edges);
+            printf("Number of edges in initial cut: %d\n", cut_edges.sum());
+            Eigen::MatrixXd Vcut;
+            Eigen::MatrixXi Fcut;
+            open_cut(V_patch, F_patch, cut_edges, Vcut, Fcut, boundary);
+            printf("Finished opening cut.\n");
+            V_patch = Vcut;  // TODO
+            F_patch = Fcut;  // warning: this may mess with indexing
+        }
+
+        // Parameterize boundary
+        bool circle_boundary = true;
+        Eigen::MatrixXd boundary_uv;
+        if (circle_boundary)
+            igl::map_vertices_to_circle(V_patch, boundary, boundary_uv);
+        else
+            boundary_parameterization(V_patch, F_patch, boundary, boundary_uv);
+        printf("Finished parameterizing boundary.\n");
+
+        // Parameterize interior
+        clean_mesh(V_patch, F_patch);
+        Eigen::MatrixXd U_harmonic;
+        igl::harmonic(V_patch, F_patch, boundary, boundary_uv, 1, U_harmonic);
+        printf("Finished parameterizing interior.\n");
+        printf("Done processing patch %d.", pi + 1);
+    }
 }

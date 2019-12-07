@@ -1,5 +1,6 @@
 #include "geometry_images.h"
 #include "io_utils.h"
+#include <igl/writeOBJ.h>
 #include <igl/read_triangle_mesh.h>
 #include <igl/per_vertex_normals.h>
 #include <igl/per_face_normals.h>
@@ -25,15 +26,7 @@ int main(int argc, char *argv[])
     // Compute parameterization
     Eigen::MatrixXd Vcut;
     Eigen::MatrixXi Fcut;
-    bool compute_geometry_image = false;
-    if (compute_geometry_image)
-    {
-        geometry_image(V, F, UV_geom, Vcut, Fcut);
-        V = Vcut;
-        F = Fcut;
-    }
-    else
-        UV_geom = V.leftCols(2);
+    geometry_image(V, F, UV_geom);
 
     // Fit parameterization in unit sphere
     bool do_normalize = false;
