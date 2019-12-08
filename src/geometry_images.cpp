@@ -1,6 +1,7 @@
 #include "geometry_images.h"
 #include <deque>
 #include <igl/slice.h>
+#include <igl/all_pairs_distances.h>
 #include <igl/cut_to_disk.h>
 #include <igl/is_edge_manifold.h>
 #include <igl/extract_manifold_patches.h>
@@ -392,29 +393,32 @@ void boundary_parameterization(const Eigen::MatrixXd & V,
     boundary_uv = Eigen::MatrixXd::Zero(n, 2);
     double increment = 5.0 / static_cast<double>(n);
     double i = 0;
+    double minval = 0;
+    double maxval = 1.0;
+    double diff = maxval - minval;
     for (int vi = 0; vi < n; vi++)
     {
         switch (int(std::floor(i)))
         {
             case 0:
-                boundary_uv(vi, 0) = 1.0;
-                boundary_uv(vi, 1) = i;
+                boundary_uv(vi, 0) = maxval;
+                boundary_uv(vi, 1) = i + (diff * 0.5);
                 break;
             case 1:
-                boundary_uv(vi, 0) = 1.0 - (i - 1.0) * 2.0;
-                boundary_uv(vi, 1) = 1.0;
+                boundary_uv(vi, 0) = maxval - (i - 1.0) * diff;
+                boundary_uv(vi, 1) = maxval;
                 break;
             case 2:
-                boundary_uv(vi, 0) = -1.0;
-                boundary_uv(vi, 1) = 1.0 - (i - 2.0) * 2.0;
+                boundary_uv(vi, 0) = minval;
+                boundary_uv(vi, 1) = maxval - (i - 2.0) * diff;
                 break;
             case 3:
-                boundary_uv(vi, 0) = -1.0 + (i - 3.0) * 2.0;
-                boundary_uv(vi, 1) = -1.0;
+                boundary_uv(vi, 0) = minval + (i - 3.0) * diff;
+                boundary_uv(vi, 1) = minval;
                 break;
             case 4:
-                boundary_uv(vi, 0) = 1.0;
-                boundary_uv(vi, 1) = -1.0 + (i - 4.0);
+                boundary_uv(vi, 0) = maxval;
+                boundary_uv(vi, 1) = minval + (i - 4.0) * diff * 0.5;
                 break;
         }
         i += increment;
@@ -425,8 +429,11 @@ void boundary_parameterization(const Eigen::MatrixXd & V,
 // ---------------------------------
 // Computes the UV parameterization for each vertex as a convex
 // combination of the boundary vertices' UV parameterizations,
-// where weights are based on geodesic distances to boundary vertices.
-// -------------------------------------------------------------------
+// where the weights are based on distances to boundary vertices.
+//
+// I would love to use geodesic distances, but my input meshes
+// are degenerate and I don't want to deal with repairing them.
+// ------------------------------------------------------------
 void interior_parameterization(const Eigen::MatrixXd & V,
                                const Eigen::MatrixXi & F,
                                const Eigen::VectorXi & boundary,
@@ -434,15 +441,21 @@ void interior_parameterization(const Eigen::MatrixXd & V,
                                Eigen::MatrixXd & U)
 {
     U.resize(V.rows(), 2);
-    Eigen::VectorXd boundary_u = boundary_uv.col(0).array();
-    Eigen::VectorXd boundary_v = boundary_uv.col(1).array();
+    Eigen::VectorXd boundary_u = boundary_uv.col(0);
+    Eigen::VectorXd boundary_v = boundary_uv.col(1);
+
+    // Get actual boundary vertices
+    Eigen::Vector3i col_idxs(0, 1, 2);
+    Eigen::MatrixXd Vboundary;
+    igl::slice(V, boundary, col_idxs, Vboundary);
+
+    // Compute distances from each vertex to each boundary vertex
+    Eigen::MatrixXd distances;
+    igl::all_pairs_distances(V, Vboundary, false, distances);
+
     for (int vi = 0; vi < V.rows(); vi++)
     {
-        Eigen::VectorXi VS, FS, FT;
-        VS.resize(1);
-        VS << vi;
-        Eigen::VectorXd d;  // geodesic distances
-        igl::exact_geodesic(V, F, VS, FS, boundary, FT, d);
+        Eigen::VectorXd d = distances.row(vi);
         Eigen::ArrayXd weights = 1.0 / (d.array() + 0.00000001);
         d = weights.matrix().normalized();
         U(vi, 0) = d.dot(boundary_u);  // "u" in parameterization
