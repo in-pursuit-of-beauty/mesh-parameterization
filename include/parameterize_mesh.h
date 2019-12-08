@@ -1,5 +1,5 @@
-#ifndef GEOMETRY_IMAGES_H
-#define GEOMETRY_IMAGES_H
+#ifndef PARAMETERIZE_H
+#define PARAMETERIZE_H
 
 #include <Eigen/Core>
 
@@ -9,8 +9,8 @@
 // Outputs:
 //   U  #U by 2 list of mesh UV parameterization coordinates
 //
-void geometry_image(Eigen::MatrixXd & V,
-                    Eigen::MatrixXi & F,
-                    Eigen::MatrixXd & U);
+void parameterize_mesh(Eigen::MatrixXd & V,
+                       Eigen::MatrixXi & F,
+                       Eigen::MatrixXd & U);
 
 #endif

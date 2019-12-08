@@ -1,4 +1,4 @@
-#include "geometry_images.h"
+#include "parameterize_mesh.h"
 #include <deque>
 #include <igl/slice.h>
 #include <igl/all_pairs_distances.h>
@@ -430,9 +430,9 @@ void interior_parameterization(const Eigen::MatrixXd & V,
     }
 }
 
-void geometry_image(Eigen::MatrixXd & V,
-                    Eigen::MatrixXi & F,
-                    Eigen::MatrixXd & U)
+void parameterize_mesh(Eigen::MatrixXd & V,
+                       Eigen::MatrixXi & F,
+                       Eigen::MatrixXd & U)
 {
     int max_component_id = -1;
     int num_components = check_components(V, F, max_component_id);

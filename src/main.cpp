@@ -1,4 +1,4 @@
-#include "geometry_images.h"
+#include "parameterize_mesh.h"
 #include <igl/read_triangle_mesh.h>
 #include <igl/writeOBJ.h>
 #include <igl/per_vertex_normals.h>
@@ -16,7 +16,7 @@ int main(int argc, char *argv[])
 
     // Compute texcoords as parameterization
     Eigen::MatrixXd TC;
-    geometry_image(V, F, TC);
+    parameterize_mesh(V, F, TC);
 
     // Normals
     Eigen::MatrixXd VN;
