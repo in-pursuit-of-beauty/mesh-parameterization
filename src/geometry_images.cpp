@@ -1,8 +1,11 @@
 #include "geometry_images.h"
 #include <deque>
+#include <igl/slice.h>
+#include <igl/cut_to_disk.h>
 #include <igl/is_edge_manifold.h>
 #include <igl/extract_manifold_patches.h>
 #include <igl/remove_unreferenced.h>
+#include <igl/remove_duplicates.h>
 #include <igl/remove_duplicate_vertices.h>
 #include <igl/edge_topology.h>
 #include <igl/is_boundary_edge.h>
@@ -14,6 +17,9 @@
 #include <igl/boundary_loop.h>
 #include <igl/facet_components.h>
 #include <igl/map_vertices_to_circle.h>
+#include <igl/exact_geodesic.h>
+// #include <igl/copyleft/cgal/remesh_self_intersections.h>
+// #include <igl/copyleft/cgal/outer_hull.h>
 #include <cmath>
 #include <unordered_set>
 
@@ -37,17 +43,40 @@ int check_components(const Eigen::MatrixXd & V,
 void clean_mesh(Eigen::MatrixXd & V,
                 Eigen::MatrixXi & F)
 {
-    // Remove unreferenced
-    Eigen::MatrixXd NV;
-    Eigen::MatrixXi NF;
-    Eigen::VectorXi I;
-    igl::remove_unreferenced(V, F, NV, NF, I);
+    // // Remesh self-intersections
+    // Eigen::MatrixXd oldV = V;
+    // Eigen::MatrixXi oldF = F;
+    // Eigen::MatrixXi IF;
+    // Eigen::VectorXi J;
+    // Eigen::VectorXi IM;
+    // igl::copyleft::cgal::remesh_self_intersections(
+    //     oldV, oldF, {false, false, false}, V, F, IF, J, IM);
+    // std::for_each(F.data(), F.data() + F.size(), [&IM](int & a) { a = IM(a); });
+    // Eigen::MatrixXd SV;
+    // Eigen::MatrixXi SF;
+    // Eigen::VectorXi UIM;
+    // igl::remove_unreferenced(V, F, SV, SF, UIM);
+    // Eigen::VectorXi flip;
+    // igl::copyleft::cgal::outer_hull(SV, SF, V, F, J, flip);
 
-    // Remove duplicate vertices
-    Eigen::MatrixXd SV;
-    Eigen::MatrixXi SVI;
-    Eigen::MatrixXi SVJ;
-    igl::remove_duplicate_vertices(NV, NF, 0.001, V, SVI, SVJ, F);
+    // Remove unreferenced
+    Eigen::MatrixXd oldV = V;
+    Eigen::MatrixXi oldF = F;
+    Eigen::VectorXi I;
+    igl::remove_unreferenced(oldV, oldF, V, F, I);
+
+    // // Remove duplicate vertices
+    // oldV = V;
+    // Eigen::MatrixXd SV;
+    // Eigen::MatrixXi SVI;
+    // Eigen::MatrixXi SVJ;
+    // igl::remove_duplicate_vertices(oldV, 0.001, V, SVI, SVJ);
+    // for (int fi; fi < F.rows(); fi++)
+    // {
+    //     F(fi, 0) = SVJ(F(fi, 0), 0);
+    //     F(fi, 1) = SVJ(F(fi, 1), 0);
+    //     F(fi, 2) = SVJ(F(fi, 2), 0);
+    // }
 }
 
 // Remove all but the largest connected component.
@@ -90,6 +119,51 @@ void remove_non_max_components(Eigen::MatrixXd & V,
 
     // Clean
     clean_mesh(V, F);
+}
+
+void igl_disk_boundary(const Eigen::MatrixXd & V,
+                       const Eigen::MatrixXi & F,
+                       Eigen::MatrixXd & Vcut,
+                       Eigen::MatrixXi & Fcut,
+                       Eigen::VectorXi & boundary)
+{
+    std::vector<std::vector<int>> cuts;
+    igl::cut_to_disk(F, cuts);
+
+    // cuts -> fCuts: translate the vertex-style cuts into the F oriented cuts representation
+    // https://github.com/libigl/libigl/issues/1328#issuecomment-546332878
+    Eigen::MatrixXi fCuts;
+    fCuts.resizeLike(F);
+    fCuts.setZero();
+    std::vector<std::vector<int>> VF, VFi;
+    igl::vertex_triangle_adjacency(V, F, VF, VFi);
+    for (auto i : cuts[0]) {
+        for (size_t f = 0; f < VF[i].size(); f++) {
+            // VF[i][f] is the face that the specific vertex is in
+            // VFi[i][f] is the index of the vertex in that face
+            fCuts.row(VF[i][f])[VFi[i][f]] = 1;
+        }
+    }
+
+    // Edges
+    Eigen::MatrixXi E;
+    Eigen::MatrixXi FE;
+    Eigen::MatrixXi EF;
+    igl::edge_topology(V, F, E, FE, EF);
+
+    // Face-face topology
+    Eigen::MatrixXi TT;
+    Eigen::MatrixXi TTi;
+    igl::triangle_triangle_adjacency(F, TT, TTi);
+
+    // Border vertex identification
+    std::vector<bool> V_border = igl::is_border_vertex(V, F);
+
+    // Open mesh
+    igl::cut_mesh(V, F, VF, VFi, TT, TTi, V_border, fCuts, Vcut, Fcut);
+
+    // Get boundary indices into Vcut
+    igl::boundary_loop(Fcut, boundary);
 }
 
 // Given a 3D mesh of arbitrary genus,
@@ -347,6 +421,35 @@ void boundary_parameterization(const Eigen::MatrixXd & V,
     }
 }
 
+// Simple interior parameterization.
+// ---------------------------------
+// Computes the UV parameterization for each vertex as a convex
+// combination of the boundary vertices' UV parameterizations,
+// where weights are based on geodesic distances to boundary vertices.
+// -------------------------------------------------------------------
+void interior_parameterization(const Eigen::MatrixXd & V,
+                               const Eigen::MatrixXi & F,
+                               const Eigen::VectorXi & boundary,
+                               const Eigen::MatrixXd & boundary_uv,
+                               Eigen::MatrixXd & U)
+{
+    U.resize(V.rows(), 2);
+    Eigen::VectorXd boundary_u = boundary_uv.col(0).array();
+    Eigen::VectorXd boundary_v = boundary_uv.col(1).array();
+    for (int vi = 0; vi < V.rows(); vi++)
+    {
+        Eigen::VectorXi VS, FS, FT;
+        VS.resize(1);
+        VS << vi;
+        Eigen::VectorXd d;  // geodesic distances
+        igl::exact_geodesic(V, F, VS, FS, boundary, FT, d);
+        Eigen::ArrayXd weights = 1.0 / (d.array() + 0.00000001);
+        d = weights.matrix().normalized();
+        U(vi, 0) = d.dot(boundary_u);  // "u" in parameterization
+        U(vi, 1) = d.dot(boundary_v);  // "v" in parameterization
+    }
+}
+
 void geometry_image(Eigen::MatrixXd & V,
                     Eigen::MatrixXi & F,
                     Eigen::MatrixXd & U)
@@ -366,60 +469,87 @@ void geometry_image(Eigen::MatrixXd & V,
     int num_patches = igl::extract_manifold_patches(F, P);
     printf("Extracted %d manifold patches.\n", num_patches);
 
-    U.resize(V.rows(), 2);  // we will fill this in
+    // Determine manifold patch sizes
+    std::vector<int> patch_sizes(num_patches, 0);
+    for (int fi = 0; fi < P.rows(); fi++)
+        patch_sizes[P[fi]]++;
+
+    // Take largest manifold patch
+    int largest_patch = 0;
+    int largest_patch_size = -1;
     for (int pi = 0; pi < num_patches; pi++)
-    {
-        printf("================================================\n");
-        printf("==> Processing patch %d/%d.\n", pi + 1, num_patches);
-        printf("================================================\n");
-
-        // Collect faces for patch
-        std::vector<int> patch_face_idxs;
-        for (int fi = 0; fi < P.rows(); fi++)
-            if (P[fi] == pi)
-                patch_face_idxs.push_back(fi);
-        Eigen::MatrixXd V_patch = V.replicate(1, 1);
-        Eigen::MatrixXi F_patch(patch_face_idxs.size(), 3);
-        for (int pfi = 0; pfi < patch_face_idxs.size(); pfi++)
-            F_patch.row(pfi) = F.row(patch_face_idxs[pfi]);  // alt: Eigen 3.4 slicing
-        clean_mesh(V_patch, F_patch);
-
-        printf("[debug] is edge manifold: %d\n", igl::is_edge_manifold(F_patch));
-
-        // Convert to topological disk, define boundary
-        bool single_boundary_loop = false;
-        Eigen::VectorXi boundary;
-        if (single_boundary_loop)
+        if (patch_sizes[pi] > largest_patch_size)
         {
-            igl::boundary_loop(F, boundary);
+            largest_patch = pi;
+            largest_patch_size = patch_sizes[pi];
+        }
+
+    // Only retain largest patch
+    printf("=======================================\n");
+    printf("==> Processing patch %d.\n", largest_patch);
+    printf("=======================================\n");
+
+    // Collect faces for patch
+    std::vector<int> patch_face_idxs;
+    for (int fi = 0; fi < P.rows(); fi++)
+        if (P[fi] == largest_patch)
+            patch_face_idxs.push_back(fi);
+    Eigen::MatrixXd Vpatch = V.replicate(1, 1);
+
+    Eigen::VectorXi row_idxs = \
+        Eigen::Map<Eigen::VectorXi, Eigen::Unaligned>(
+            patch_face_idxs.data(), patch_face_idxs.size());
+    Eigen::Vector3i col_idxs(0, 1, 2);
+    Eigen::MatrixXi Fpatch;
+    igl::slice(F, row_idxs, col_idxs, Fpatch);
+
+    if (!igl::is_edge_manifold(Fpatch))
+        printf("[-] Warning: the patch should be edge manifold at this point\n");
+
+    clean_mesh(Vpatch, Fpatch);
+
+    // Convert to topological disk, define boundary
+    bool single_boundary_loop = false;
+    Eigen::VectorXi boundary;
+    if (single_boundary_loop)
+    {
+        igl::boundary_loop(Fpatch, boundary);
+    }
+    else
+    {
+        bool use_igl_disk_boundary = true;
+        Eigen::MatrixXd Vcut;
+        Eigen::MatrixXi Fcut;
+        if (use_igl_disk_boundary)
+        {
+            igl_disk_boundary(Vpatch, Fpatch, Vcut, Fcut, boundary);
         }
         else
         {
             Eigen::ArrayXi cut_edges;
-            initial_cut(V_patch, F_patch, 0.59f, cut_edges);
+            initial_cut(Vpatch, Fpatch, 0.59f, cut_edges);
             printf("Number of edges in initial cut: %d\n", cut_edges.sum());
-            Eigen::MatrixXd Vcut;
-            Eigen::MatrixXi Fcut;
-            open_cut(V_patch, F_patch, cut_edges, Vcut, Fcut, boundary);
-            printf("Finished opening cut.\n");
-            V_patch = Vcut;  // TODO
-            F_patch = Fcut;  // warning: this may mess with indexing
+            open_cut(Vpatch, Fpatch, cut_edges, Vcut, Fcut, boundary);
         }
-
-        // Parameterize boundary
-        bool circle_boundary = true;
-        Eigen::MatrixXd boundary_uv;
-        if (circle_boundary)
-            igl::map_vertices_to_circle(V_patch, boundary, boundary_uv);
-        else
-            boundary_parameterization(V_patch, F_patch, boundary, boundary_uv);
-        printf("Finished parameterizing boundary.\n");
-
-        // Parameterize interior
-        clean_mesh(V_patch, F_patch);
-        Eigen::MatrixXd U_harmonic;
-        igl::harmonic(V_patch, F_patch, boundary, boundary_uv, 1, U_harmonic);
-        printf("Finished parameterizing interior.\n");
-        printf("Done processing patch %d.", pi + 1);
+        printf("Finished opening cut.\n");
+        Vpatch = Vcut;
+        Fpatch = Fcut;
     }
+
+    // Parameterize boundary
+    bool circle_boundary = false;
+    Eigen::MatrixXd boundary_uv;
+    if (circle_boundary)
+        igl::map_vertices_to_circle(Vpatch, boundary, boundary_uv);
+    else
+        boundary_parameterization(Vpatch, Fpatch, boundary, boundary_uv);
+    printf("Finished parameterizing boundary.\n");
+
+    // Parameterize interior
+    clean_mesh(Vpatch, Fpatch);
+    interior_parameterization(Vpatch, Fpatch, boundary, boundary_uv, U);
+    printf("Finished parameterizing interior.\n");
+    V = Vpatch;
+    F = Fpatch;
+    printf("Done processing patch %d.\n", largest_patch);
 }
