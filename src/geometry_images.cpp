@@ -6,21 +6,17 @@
 #include <igl/is_edge_manifold.h>
 #include <igl/extract_manifold_patches.h>
 #include <igl/remove_unreferenced.h>
-#include <igl/remove_duplicates.h>
 #include <igl/remove_duplicate_vertices.h>
 #include <igl/edge_topology.h>
 #include <igl/is_boundary_edge.h>
 #include <igl/vertex_triangle_adjacency.h>
 #include <igl/triangle_triangle_adjacency.h>
 #include <igl/is_border_vertex.h>
-#include <igl/harmonic.h>
 #include <igl/cut_mesh.h>
 #include <igl/boundary_loop.h>
 #include <igl/facet_components.h>
 #include <igl/map_vertices_to_circle.h>
 #include <igl/exact_geodesic.h>
-// #include <igl/copyleft/cgal/remesh_self_intersections.h>
-// #include <igl/copyleft/cgal/outer_hull.h>
 #include <cmath>
 #include <unordered_set>
 
@@ -44,40 +40,11 @@ int check_components(const Eigen::MatrixXd & V,
 void clean_mesh(Eigen::MatrixXd & V,
                 Eigen::MatrixXi & F)
 {
-    // // Remesh self-intersections
-    // Eigen::MatrixXd oldV = V;
-    // Eigen::MatrixXi oldF = F;
-    // Eigen::MatrixXi IF;
-    // Eigen::VectorXi J;
-    // Eigen::VectorXi IM;
-    // igl::copyleft::cgal::remesh_self_intersections(
-    //     oldV, oldF, {false, false, false}, V, F, IF, J, IM);
-    // std::for_each(F.data(), F.data() + F.size(), [&IM](int & a) { a = IM(a); });
-    // Eigen::MatrixXd SV;
-    // Eigen::MatrixXi SF;
-    // Eigen::VectorXi UIM;
-    // igl::remove_unreferenced(V, F, SV, SF, UIM);
-    // Eigen::VectorXi flip;
-    // igl::copyleft::cgal::outer_hull(SV, SF, V, F, J, flip);
-
     // Remove unreferenced
     Eigen::MatrixXd oldV = V;
     Eigen::MatrixXi oldF = F;
     Eigen::VectorXi I;
     igl::remove_unreferenced(oldV, oldF, V, F, I);
-
-    // // Remove duplicate vertices
-    // oldV = V;
-    // Eigen::MatrixXd SV;
-    // Eigen::MatrixXi SVI;
-    // Eigen::MatrixXi SVJ;
-    // igl::remove_duplicate_vertices(oldV, 0.001, V, SVI, SVJ);
-    // for (int fi; fi < F.rows(); fi++)
-    // {
-    //     F(fi, 0) = SVJ(F(fi, 0), 0);
-    //     F(fi, 1) = SVJ(F(fi, 1), 0);
-    //     F(fi, 2) = SVJ(F(fi, 2), 0);
-    // }
 }
 
 // Remove all but the largest connected component.
@@ -179,7 +146,7 @@ void initial_cut(const Eigen::MatrixXd & V,
     Eigen::MatrixXi FE;
     Eigen::MatrixXi EF;
     igl::edge_topology(V, F, E, FE, EF);
-    printf("V: %d | F: %d | E: %d\n", V.rows(), F.rows(), E.rows());
+    printf("V: %ld | F: %ld | E: %ld\n", V.rows(), F.rows(), E.rows());
 
     // Vertex-face topology
     std::vector<std::vector<int>> VF;
