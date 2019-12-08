@@ -6,7 +6,7 @@ from Alec Jacobson's geometry processing course.
 ## Prerequisites
 Install CMake and a modern C++ compiler. Then clone the repository using
 ```
-git clone --recursive http://github.com/ohjay/mesh-parameterization.git
+git clone --recursive https://github.com/in-pursuit-of-beauty/mesh-parameterization.git
 ```
 
 ## Compilation
@@ -19,5 +19,5 @@ make
 
 ## Execution
 ```
-./mesh-parameterization <path to obj>
+./add-texcoords <in.obj> <out.obj>
 ```
